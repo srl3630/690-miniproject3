@@ -259,25 +259,25 @@ class SpawnCar:
 if __name__ == "__main__":
     # Set up command-line arguments
     parser = argparse.ArgumentParser(description="Spawn a car in CARLA, attach multiple sensors, and save sensor data.")
-    parser.add_argument("--host", type=str, default="localhost", help="CARLA server host.")
-    parser.add_argument("--port", type=int, default=2000, help="CARLA server port.")
-    parser.add_argument("--world", type=str, default="Town04", help="World to load in CARLA.")
-    parser.add_argument("--autopilot", default=True, help="Enable autopilot for the spawned car.")
-    parser.add_argument("--save_dir", type=str, default="sensor_output", help="Directory to save sensor data.")
-    parser.add_argument("--reload_map", type=bool, default=False, help="Reload the map before spawning the car.")
-    parser.add_argument("--runtime", type=float, default=10.0, help="Duration of the simulation in seconds.")
+    parser.add_argument("--host", type=str, default="localhost", help="CARLA server host. Default is 'localhost'.")
+    parser.add_argument("--port", type=int, default=2000, help="CARLA server port. Default is 2000.")
+    parser.add_argument("--world", type=str, default="Town04", help="World to load in CARLA. Default is 'Town04'.")
+    parser.add_argument("--autopilot", default=True, help="Enable autopilot for the spawned car. Default is True.")
+    parser.add_argument("--save_dir", type=str, default="sensor_output", help="Directory to save sensor data. Default is 'sensor_output'")
+    parser.add_argument("--reload_map", type=bool, default=False, help="Reload the map before spawning the car. Default is False.")
+    parser.add_argument("--runtime", type=float, default=10.0, help="Duration of the simulation in seconds. Default is 10.0")
     parser.add_argument(
         "--sensors",
         type=str,
         default=json.dumps([  # Default sensors
             {"type": "sensor.lidar.ray_cast", "x": 0.0, "y": 0.0, "z": 2},
-            {"type": "sensor.camera.rgb", "x": 0.7, "y": -0.9, "z": 1},
-            {"type": "sensor.camera.depth", "x": 0.7, "y": 0.9, "z": 1},
+            {"type": "sensor.camera.rgb", "x": 1.8, "y": -0.5, "z": 0.7},
+            {"type": "sensor.camera.depth", "x": 1.8, "y": 0.5, "z": 0.7},
         ]),
         help="""JSON string specifying the sensors. Default sensors are:
                 '[{"type": "sensor.lidar.ray_cast", "x": 0.0, "y": 0.0, "z": 2}, 
-                   {"type": "sensor.camera.rgb", "x": 0.7, "y": -0.9, "z": 1}, 
-                   {"type": "sensor.camera.depth", "x": 0.7, "y": 0.9, "z": 1}]'"""
+                   {"type": "sensor.camera.rgb", "x": 1.8, "y": -0.5, "z": 0.7}, 
+                   {"type": "sensor.camera.depth", "x": 1.8, "y": 0.5, "z": 0.7}]'"""
     )
 
     args = parser.parse_args()
