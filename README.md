@@ -1,4 +1,4 @@
-# CARLA Sensor Recording Project
+# CS 690 - MiniProject 3 - CARLA Data collection and Processing.
 
 ## Overview
 
