@@ -4,6 +4,8 @@
 
 This project provides a framework for spawning a vehicle in the CARLA simulator and recording data from multiple sensors. It allows you to configure various sensor types (e.g., cameras, LiDAR) and save the captured data for later analysis or use in machine learning applications.
 
+[Sample Output (Google Drive)](https://drive.google.com/drive/folders/14sAM0Tg_8Qq1EABdM_fMnW05E99ldiHE?usp=drive_link)
+
 **Important:** This project requires an active, running instance of the CARLA simulator.
 
 ## Requirements
