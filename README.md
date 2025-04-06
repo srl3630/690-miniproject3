@@ -45,7 +45,7 @@ This project provides a framework for spawning a vehicle in the CARLA simulator 
     python sensors.py --save_dir /path/to/output/folder --runtime 10
     ```
 
-3.  **Configure Sensors:** The script uses JSON to define the sensors to be attached to the vehicle. The default configuration satisfies the following requirements (no `--sensors` argument specified).
+3.  **Configure Sensors:** The script uses JSON to define the sensors and their positions to be attached to the vehicle. The default configuration satisfies the following requirements (no `--sensors` argument specified). See [Example Sensor Flag Input](#example-sensor-flag-input) for examples.
 - `Lidar` sensor placed above car, centered
 - `RGB` sensor placed near left headlight
 - `Depth` sensor placed near right headlight
@@ -59,6 +59,13 @@ The `sensors.py` script uses `argparse` to handle command-line arguments. Here's
 *   `--save_dir`: Specifies the directory where the recorded sensor data will be saved. (Will be created if it does not exist, runs non-destructively) **Default:**  If not provided, the default directory is *sensor_output* in the directory the script is run from.
 *   `--town`: Specifies the town to use in the simulation. **Default:** If not provided, `Town04` will be selected, which comes default with Carla.
 *   `--runtime`: Specifies runtime in seconds **Default:** If not provided, default is 10 seconds
+
+
+## Example Sensor Flag Input
+*Lidar*, *RGB*, and *Depth* Sensors with all coordinate values set to `10`
+```
+python sensors.py --sensors '[{"type": "sensor.lidar.ray_cast", "x": 10.0, "y": 10.0, "z": 10.0}, {"type": "sensor.camera.rgb", "x": 10.0, "y": 10.0, "z": 10.0}, {"type": "sensor.camera.depth", "x": 10.0, "y": 10.0, "z": 10.0}]'
+```
 
 ## Notes
 

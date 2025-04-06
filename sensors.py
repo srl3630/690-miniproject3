@@ -264,7 +264,7 @@ if __name__ == "__main__":
     parser.add_argument("--world", type=str, default="Town04", help="World to load in CARLA. Default is 'Town04'.")
     parser.add_argument("--autopilot", default=True, help="Enable autopilot for the spawned car. Default is True.")
     parser.add_argument("--save_dir", type=str, default="sensor_output", help="Directory to save sensor data. Default is 'sensor_output'")
-    parser.add_argument("--reload_map", type=bool, default=False, help="Reload the map before spawning the car. Default is False.")
+    parser.add_argument("--reload_map", type=bool, default=True, help="Reload the map before spawning the car. Default is True.")
     parser.add_argument("--runtime", type=float, default=10.0, help="Duration of the simulation in seconds. Default is 10.0")
     parser.add_argument(
         "--sensors",
