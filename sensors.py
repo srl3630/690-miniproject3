@@ -188,16 +188,75 @@ class SpawnCar:
 
         return sensor
 
-    def project_lidar_to_all_cameras(self, lidar_data, lidar_name='lidar'):
+    def process_frame_with_multiple_cameras(self, lidar_name='lidar'):
         """
-        Project lidar points to all available cameras and return the results.
+        Process a single frame with multiple cameras and lidar.
+        """
+        # Get lidar data
+        try:
+            lidar_data = self.frame_counters[lidar_name]['queue'].get(True, 1.0)
+        except Empty:
+            print("[Warning] Lidar data was missed")
+            return None
+
+        # Save the lidar data
+        self.save_lidar_data(lidar_name, lidar_data, args.save_dir)
+
+        # Dictionary to hold camera images
+        camera_images = {}
+
+        # First process all camera data
+        for camera_name in [name for name in self.sensors.keys() if 'camera' in name]:
+            try:
+                # Get camera data
+                camera_data = self.frame_counters[camera_name]['queue'].get(True, 1.0)
+
+                # Convert camera data to image
+                img = np.array(camera_data.raw_data)
+                img = img.reshape((camera_data.height, camera_data.width, 4))
+                img = img[:, :, :3]  # Remove alpha channel
+
+                # Store the image
+                camera_images[camera_name] = img
+
+                # Save to original location
+                output_dir = self.output_dirs.get(camera_name)
+                if not output_dir:
+                    output_dir = os.path.join(args.save_dir, camera_name)
+                    os.makedirs(output_dir, exist_ok=True)
+                    self.output_dirs[camera_name] = output_dir
+
+                # Save original camera image
+                camera_frame_num = self.frame_counters[camera_name]['counter']
+                output_path = os.path.join(output_dir, f"{camera_frame_num:06d}.png")
+                cv2.imwrite(output_path, img)
+
+                # Increment frame counter
+                self.frame_counters[camera_name]['counter'] += 1
+
+            except Empty:
+                print(f"[Warning] Camera {camera_name} data was missed")
+
+        # First perform camera fusion
+        fused_images = self.perform_carla_sensor_fusion(camera_images)
+
+        # Then project lidar points on both original and fused images with enhanced visibility
+        self.project_lidar_to_camera_images(lidar_data, camera_images, lidar_name, fused_images)
+
+        # Increment lidar frame counter
+        self.frame_counters[lidar_name]['counter'] += 1
+
+        return camera_images
+
+    def project_lidar_to_camera_images(self, lidar_data, camera_images, lidar_name='lidar', fused_images=None):
+        """
+        Project lidar points to camera images with improved visualization.
 
         Args:
             lidar_data: Raw lidar data
+            camera_images: Dictionary of camera_name -> camera image
             lidar_name: Name of the lidar sensor
-
-        Returns:
-            Dictionary of camera_name -> projection results
+            fused_images: Dictionary of fused camera images (optional)
         """
         # Get lidar data as numpy array
         p_cloud_size = len(lidar_data)
@@ -219,14 +278,9 @@ class SpawnCar:
         # Transform points from lidar to world space
         world_points = np.dot(lidar_2_world, local_lidar_points)
 
-        # Dictionary to store projection results
-        projection_results = {}
-
-        # Project to each camera
-        for camera_name, camera in self.sensors.items():
-            # Skip if not a camera
-            if 'camera' not in camera_name:
-                continue
+        # Project to each camera that we have an image for
+        for camera_name, camera_image in camera_images.items():
+            camera = self.sensors[camera_name]
 
             # Get camera intrinsic matrix (K)
             K = self.frame_counters[camera_name]['K']
@@ -267,107 +321,108 @@ class SpawnCar:
             filtered_points = points_2d[points_in_canvas_mask]
             filtered_intensity = filtered_intensity[points_in_canvas_mask]
 
-            # Store in the results dictionary
-            projection_results[camera_name] = {
-                'points_2d': filtered_points,
-                'intensity': filtered_intensity
-            }
+            # Store filtered depth values for point size calculation
+            depth_values = point_in_camera_coords[2, points_in_canvas_mask]
 
-        return projection_results
+            # Generate high contrast lidar visualization on both original and fused images
+            self._apply_high_contrast_lidar_visualization(
+                camera_image, filtered_points, depth_values, camera_name,
+                is_fusion=False, frame_num=self.frame_counters[camera_name]['counter'] - 1
+            )
 
-    def process_frame_with_multiple_cameras(self, lidar_name='lidar'):
+            # For fused images - apply the same lidar visualization
+            if fused_images and camera_name in fused_images:
+                self._apply_high_contrast_lidar_visualization(
+                    fused_images[camera_name], filtered_points, depth_values, camera_name,
+                    is_fusion=True, frame_num=self.frame_counters[camera_name]['counter'] - 1
+                )
+
+    def _apply_high_contrast_lidar_visualization(self, image, points, depth_values, camera_name,
+                                                 is_fusion=False, frame_num=0):
         """
-        Process a single frame with multiple cameras and lidar.
+        Apply high contrast lidar visualization on an image
+
+        Args:
+            image: The image to apply lidar points on
+            points: The 2D points to draw
+            depth_values: Depth values for each point
+            camera_name: Name of the camera
+            is_fusion: Whether this is a fusion image or original camera image
+            frame_num: Frame number for saving
         """
-        # Get lidar data
-        try:
-            lidar_data = self.frame_counters[lidar_name]['queue'].get(True, 1.0)
-        except Empty:
-            print("[Warning] Lidar data was missed")
-            return None
+        # Create a copy of the image for visualization
+        visualization = image.copy()
+        visible_points = 0
 
-        # Save the lidar data
-        self.save_lidar_data(lidar_name, lidar_data, args.save_dir)
+        # Draw lidar points with high contrast colors
+        for i, (point, depth) in enumerate(zip(points, depth_values)):
+            x, y = int(point[0]), int(point[1])
 
-        # Project lidar points to all cameras
-        projections = self.project_lidar_to_all_cameras(lidar_data, lidar_name)
+            # Use a point size that scales with distance (closer = larger)
+            point_size = max(1, int(5 - min(depth / 10, 4)))
 
-        # Process each camera's data
-        for camera_name in [name for name in self.sensors.keys() if 'camera' in name]:
-            try:
-                # Get camera data
-                camera_data = self.frame_counters[camera_name]['queue'].get(True, 1.0)
+            # Use high-contrast colors with distance-based hue
+            if depth < 10:
+                # Magenta for close objects - highly visible
+                color = (255, 0, 255)
+            elif depth < 20:
+                # Cyan for medium distance - also high contrast
+                color = (255, 255, 0)
+            elif depth < 30:
+                # Bright green - visible on most backgrounds
+                color = (0, 255, 0)
+            else:
+                # White for far objects
+                color = (255, 255, 255)
 
-                # Skip if projections not available
-                if camera_name not in projections:
-                    continue
+            # Draw with anti-aliasing for better visibility
+            cv2.circle(visualization, (x, y), point_size, color, -1)
+            visible_points += 1
 
-                # Get projection data
-                proj_data = projections[camera_name]
-                points_2d = proj_data['points_2d']
-                intensity = proj_data['intensity']
+        # Add informative elements
+        font = cv2.FONT_HERSHEY_SIMPLEX
 
-                # Create image from raw data
-                im_array = np.copy(np.frombuffer(camera_data.raw_data, dtype=np.dtype("uint8")))
-                im_array = np.reshape(im_array, (camera_data.height, camera_data.width, 4))
-                im_array = im_array[:, :, :3][:, :, ::-1]  # BGRA to RGB
+        # Add a semi-transparent black background for text to ensure readability
+        bg_rect = np.zeros((140, 200, 3), dtype=np.uint8)
+        visualization[10:150, 10:210] = cv2.addWeighted(
+            visualization[10:150, 10:210], 0.3, bg_rect, 0.7, 0)
 
-                # Extract screen coordinates
-                u_coord = points_2d[:, 0].astype(np.int_)
-                v_coord = points_2d[:, 1].astype(np.int_)
+        cv2.putText(visualization, f"LiDAR Points: {visible_points}",
+                    (15, 35), font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
-                # Create color mapping for points
-                intensity = 4 * intensity - 3
-                color_map = np.array([
-                    np.interp(intensity, self.VID_RANGE, self.VIRIDIS[:, 0]) * 255.0,
-                    np.interp(intensity, self.VID_RANGE, self.VIRIDIS[:, 1]) * 255.0,
-                    np.interp(intensity, self.VID_RANGE, self.VIRIDIS[:, 2]) * 255.0
-                ]).astype(np.int_).T
+        # Add a color legend with improved visibility
+        legend_y = 70
+        cv2.putText(visualization, "Distance:", (15, legend_y), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-                # Create output directory if it doesn't exist
-                if camera_name not in self.output_dirs:
-                    output_dir = os.path.join(args.save_dir, camera_name)
-                    os.makedirs(output_dir, exist_ok=True)
-                    self.output_dirs[camera_name] = output_dir
+        cv2.circle(visualization, (100, legend_y - 5), 5, (255, 0, 255), -1)  # Magenta
+        cv2.putText(visualization, "<10m", (110, legend_y), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-                # Draw points on image (using the dot_extent parameter if available)
-                dot_extent = 1  # Default dot size
-                if hasattr(args, 'dot_extent'):
-                    dot_extent = args.dot_extent
+        legend_y += 20
+        cv2.circle(visualization, (100, legend_y - 5), 5, (255, 255, 0), -1)  # Cyan
+        cv2.putText(visualization, "10-20m", (110, legend_y), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-                if dot_extent <= 0:
-                    # Draw the 2d points on the image as a single pixel
-                    im_array[v_coord, u_coord] = color_map
-                else:
-                    # Draw the 2d points on the image as squares
-                    for i in range(len(points_2d)):
-                        # Calculate valid ranges for dot placement
-                        v_min = max(0, v_coord[i] - dot_extent)
-                        v_max = min(camera_data.height, v_coord[i] + dot_extent)
-                        u_min = max(0, u_coord[i] - dot_extent)
-                        u_max = min(camera_data.width, u_coord[i] + dot_extent)
+        legend_y += 20
+        cv2.circle(visualization, (100, legend_y - 5), 5, (0, 255, 0), -1)  # Bright green
+        cv2.putText(visualization, "20-30m", (110, legend_y), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-                        # Draw the dot
-                        im_array[v_min:v_max, u_min:u_max] = color_map[i]
+        legend_y += 20
+        cv2.circle(visualization, (100, legend_y - 5), 5, (255, 255, 255), -1)  # White
+        cv2.putText(visualization, ">30m", (110, legend_y), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 
-                # Save the frame as an image
-                frame_count = self.frame_counters[camera_name]['counter']
-                file_name = f"{frame_count:06d}.png"
-                file_path = os.path.join(self.output_dirs[camera_name], file_name)
+        # Save visualization to file
+        output_dir = self.output_dirs.get(camera_name)
 
-                # Save image using PIL
-                image = Image.fromarray(im_array)
-                image.save(file_path)
+        # Determine appropriate subfolder based on whether this is fusion or original
+        if is_fusion:
+            subfolder = os.path.join(output_dir, 'fusion_with_lidar')
+        else:
+            subfolder = os.path.join(output_dir, 'lidar_viz')
 
-                # Increment frame counter
-                self.frame_counters[camera_name]['counter'] += 1
+        os.makedirs(subfolder, exist_ok=True)
 
-            except Empty:
-                print(f"[Warning] Camera {camera_name} data was missed")
-                continue
-
-        # Increment lidar frame counter
-        self.frame_counters[lidar_name]['counter'] += 1
+        # Save the visualization
+        viz_path = os.path.join(subfolder, f"{frame_num:06d}.png")
+        cv2.imwrite(viz_path, visualization)
 
     # Helper function for CARLA Depth Conversion (assuming saved with carla.ColorConverter.Depth)
     def carla_depth_to_meters(self, depth_img_array_uint8):
@@ -408,236 +463,141 @@ class SpawnCar:
     #     depth_in_meters = 1000.0 * (gray_depth.astype(np.float32) / 255.0)
     #     return depth_in_meters
 
-    def perform_carla_sensor_fusion(self):
+    def perform_carla_sensor_fusion(self, camera_images):
         """
-        Use CARLA's built-in capabilities and correct transformations to perform
-        sensor fusion between RGB and Depth cameras.
+        Perform sensor fusion on multiple camera images.
+        Returns a dictionary of fused images for each camera.
         """
-        # Get all camera sensors
-        camera_sensors = {name: sensor for name, sensor in self.sensors.items() if 'camera' in name}
+        # Dictionary to store the fused outputs for each camera
+        fused_outputs = {}
 
-        if len(camera_sensors) < 2:
-            print("Need at least 2 cameras for fusion")
-            return
+        # Make sure we have at least two cameras to fuse
+        if len(camera_images) < 2:
+            print("Not enough cameras for fusion")
+            return fused_outputs
 
-        # Create output directory for fusion results
-        fusion_dir = os.path.join(self.output_dirs.get('base', 'sensor_output'), 'fusion_camera')
-        self.output_dirs['fusion_camera'] = fusion_dir
-        os.makedirs(fusion_dir, exist_ok=True)
+        # Process each camera
+        for target_camera_name, target_image in camera_images.items():
+            # Create a copy of the target image for fusion
+            fused_image = target_image.copy()
+            target_camera = self.sensors[target_camera_name]
 
-        # Get the frame number - IMPORTANT: Assumes sensors are synchronized!
-        # If not running in synchronous mode, this can lead to mismatches.
-        frame_num = max(
-            counter_data['counter'] for sensor_name, counter_data in self.frame_counters.items()
-            if 'counter' in counter_data
-        ) - 1 if self.frame_counters else 0
+            # Get the world transform for the target camera
+            target_to_world = target_camera.get_transform().get_matrix()
 
-        # Get main reference sensor (e.g., RGB camera)
-        reference_sensor_name = next((name for name in camera_sensors if 'rgb' in name or 'front_camera' in name), None)
-        if not reference_sensor_name:
-            print("Warning: Could not find a primary RGB camera ('rgb' or 'front_camera'). Using first available.")
-            reference_sensor_name = next(iter(camera_sensors))  # Fallback
+            # Get the camera intrinsic matrix (K) for the target camera
+            target_K = self.frame_counters[target_camera_name]['K']
+            target_K_inv = np.linalg.inv(target_K)
 
-        reference_sensor = self.sensors[reference_sensor_name]
-        reference_transform = reference_sensor.get_transform()  # World transform of RGB cam
+            # Get image dimensions
+            target_h, target_w = target_image.shape[:2]
 
-        # Get reference image
-        ref_img_path = os.path.join(
-            self.output_dirs.get(reference_sensor_name,
-                                 os.path.join(self.output_dirs.get('base', 'sensor_output'), reference_sensor_name)),
-            f"{self.frame_counters[reference_sensor_name]['counter'] - 1:06d}.png"
-        )
-        if not os.path.exists(ref_img_path):
-            print(f"Reference image {ref_img_path} not found for frame {frame_num}")
-            return
+            # Create a grid of pixel coordinates for the target image
+            target_y, target_x = np.indices((target_h, target_w))
+            target_pixels = np.stack((target_x.flatten(), target_y.flatten(), np.ones_like(target_x.flatten())), axis=0)
 
-        reference_img = cv2.imread(ref_img_path)
-        if reference_img is None:
-            print(f"Error reading reference image {ref_img_path}")
-            return
-        rgb_height, rgb_width, _ = reference_img.shape
-
-        # --- Find and Process Depth Sensor ---
-        depth_sensor_name = next((name for name in camera_sensors if 'depth' in name), None)
-        if not depth_sensor_name:
-            print("No depth sensor found for fusion.")
-            return
-
-        depth_sensor = self.sensors[depth_sensor_name]
-        depth_transform = depth_sensor.get_transform()  # World transform of Depth cam
-
-        # Get depth image path
-        depth_img_path = os.path.join(
-            self.output_dirs.get(depth_sensor_name,
-                                 os.path.join(self.output_dirs.get('base', 'sensor_output'), depth_sensor_name)),
-            f"{self.frame_counters[depth_sensor_name]['counter'] - 1:06d}.png"
-        )
-        if not os.path.exists(depth_img_path):
-            print(f"Depth image {depth_img_path} not found for frame {frame_num}")
-            return
-
-        # --- Correct Depth Loading and Conversion ---
-        try:
-            # Load using PIL to handle different PNG types, then convert to NumPy
-            depth_img_pil = Image.open(depth_img_path)
-            depth_img_raw = np.array(depth_img_pil, dtype=np.uint8)  # Assume uint8 PNG output
-
-            print(f"Loaded Depth image shape: {depth_img_raw.shape}, dtype: {depth_img_raw.dtype}")
-
-            # *** CRITICAL STEP: Choose the correct conversion based on how depth was saved ***
-            # Option 1: Assume saved using carla.ColorConverter.Depth (Encodes depth in RGB channels)
-            depth_in_meters = self.carla_depth_to_meters(depth_img_raw)
-
-            # Option 2: Assume saved using carla.ColorConverter.LogarithmicDepth (Grayscale, needs scaling)
-            # depth_in_meters = carla_log_depth_to_meters(depth_img_raw)
-
-            # Option 3: If you saved raw depth data (e.g., as .npy float32), load that directly.
-            # depth_in_meters = np.load(depth_img_path.replace('.png', '.npy')) # Example
-
-            # Option 4: If you used your previous linear scaling method during *saving*
-            # if len(depth_img_raw.shape) > 2:
-            #     depth_img_raw_gray = depth_img_raw[:, :, 0] # Take one channel if needed
-            # else:
-            #     depth_img_raw_gray = depth_img_raw
-            # normalized_depth = depth_img_raw_gray.astype(np.float32) / 255.0
-            # depth_in_meters = 1000.0 * normalized_depth # Matches your original code attempt
-
-        except Exception as e:
-            print(f"Error processing depth image {depth_img_path}: {e}")
-            return
-
-        depth_height, depth_width = depth_in_meters.shape  # Should now be 2D
-
-        # --- Calculate Depth Camera Intrinsics ---
-        try:
-            depth_fov = float(depth_sensor.attributes['fov'])
-        except KeyError:
-            print("Warning: Depth sensor 'fov' attribute missing. Assuming 90.")
-            depth_fov = 90.0
-        depth_focal = depth_width / (2.0 * math.tan(math.radians(depth_fov) / 2.0))
-        depth_cx = depth_width / 2.0
-        depth_cy = depth_height / 2.0
-
-        # --- Generate Point Cloud in World Coordinates ---
-        world_points = []
-        subsample = 5  # Process every 5th pixel for efficiency
-        for y in range(0, depth_height, subsample):
-            for x in range(0, depth_width, subsample):
-                depth_value = depth_in_meters[y, x]
-
-                # Skip invalid depth points (e.g., sky, far distance)
-                # CARLA depth is typically max 1000m, but check your sensor's range attribute
-                if depth_value <= 0 or depth_value >= 1000.0:
+            # Project each source camera onto target camera
+            for source_camera_name, source_image in camera_images.items():
+                # Skip if source is the same as target
+                if source_camera_name == target_camera_name:
                     continue
 
-                # --- Inverse Projection: 2D Pixel (Depth Cam) -> 3D Point (Depth Cam Local) ---
-                # CARLA Camera Local Coords: X=forward, Y=right, Z=up
-                # Image Coords: x increases right, y increases down
-                # Formulas derived from pinhole model:
-                # x_img = cx + f * (Y_cam / X_cam)  => Y_cam = X_cam * (x_img - cx) / f
-                # y_img = cy - f * (Z_cam / X_cam)  => Z_cam = -X_cam * (y_img - cy) / f
-                x_cam = float(depth_value)  # X_cam is the depth value
-                y_cam = x_cam * (x - depth_cx) / depth_focal  # Y_cam is right
-                z_cam = -x_cam * (y - depth_cy) / depth_focal  # Z_cam is up (y increases down)
-                point_in_cam_local = carla.Location(x=x_cam, y=y_cam, z=z_cam)
+                source_camera = self.sensors[source_camera_name]
+                source_to_world = source_camera.get_transform().get_matrix()
+                world_to_source = np.linalg.inv(source_to_world)
 
-                # --- Transform Point from Depth Camera Local Space to World Space ---
-                # Uses the depth sensor's world transform
-                world_point = depth_transform.transform(point_in_cam_local)
-                world_points.append(world_point)
+                # Get camera intrinsics for source
+                source_K = self.frame_counters[source_camera_name]['K']
 
-        print(f"Generated {len(world_points)} points from depth map (subsampled).")
+                # Get image dimensions for source
+                source_h, source_w = source_image.shape[:2]
 
-        # --- Project World Points onto Reference (RGB) Camera Image ---
-        fused_img = reference_img.copy()
+                # Define the source camera in the world
+                source_camera_in_world = source_to_world
 
-        # --- Calculate RGB Camera Intrinsics ---
-        try:
-            rgb_fov = float(reference_sensor.attributes['fov'])
-        except KeyError:
-            print("Warning: RGB sensor 'fov' attribute missing. Assuming 90.")
-            rgb_fov = 90.0
-        rgb_focal = rgb_width / (2.0 * math.tan(math.radians(rgb_fov) / 2.0))
-        rgb_cx = rgb_width / 2.0
-        rgb_cy = rgb_height / 2.0
+                # Define the target camera in the world
+                target_camera_in_world = target_to_world
 
-        # --- Get the Transformation Matrix from World to RGB Camera Local Space ---
-        # We need the inverse of the RGB camera's world transform
-        world_to_rgb_cam_matrix = np.array(reference_transform.get_inverse_matrix())
+                # Define the transformation from target to source camera
+                target_to_source = np.dot(world_to_source, target_camera_in_world)
 
-        point_count = 0
-        visible_count = 0
+                # Transform the target pixel grid to camera rays
+                rays = np.dot(target_K_inv, target_pixels)
 
-        for world_point in world_points:
-            point_count += 1
+                # We need to estimate the depth for each pixel
+                # Let's use a constant depth for visualization
+                # In a real-world scenario, you'd use a depth map from sensors
+                depth = 50.0  # Arbitrary depth value to use for testing
 
-            # --- Transform World Point to RGB Camera Local Coordinates ---
-            # Convert carla.Location to homogeneous coordinates [x, y, z, 1] for matrix multiplication
-            wp = np.array([world_point.x, world_point.y, world_point.z, 1.0])
-            # Apply the inverse transform matrix
-            point_in_rgb_cam_h = world_to_rgb_cam_matrix @ wp
-            # Result is [X_cam, Y_cam, Z_cam, 1] in the RGB camera's local frame
+                # Scale rays by depth
+                rays_3d = np.multiply(rays, depth)
 
-            # Get non-homogeneous coords (X=forward, Y=right, Z=up)
-            x_rgb_cam = point_in_rgb_cam_h[0]
-            y_rgb_cam = point_in_rgb_cam_h[1]
-            z_rgb_cam = point_in_rgb_cam_h[2]
+                # Add homogeneous coordinate
+                rays_3d_homogeneous = np.vstack((rays_3d, np.ones((1, rays_3d.shape[1]))))
 
-            # --- Forward Projection: 3D Point (RGB Cam Local) -> 2D Pixel (RGB Image) ---
-            # Check if point is behind the camera (X_cam <= 0)
-            if x_rgb_cam <= 1e-6:  # Add small epsilon for stability
-                continue
+                # Transform rays from target camera to world
+                rays_world = np.dot(target_camera_in_world, rays_3d_homogeneous)
 
-            # Apply pinhole projection formulas (consistent with inverse projection derivation)
-            # x_img = cx + f * (Y_cam / X_cam)
-            # y_img = cy - f * (Z_cam / X_cam)
-            image_x = rgb_cx + rgb_focal * (y_rgb_cam / x_rgb_cam)
-            image_y = rgb_cy - rgb_focal * (z_rgb_cam / x_rgb_cam)
+                # Transform rays from world to source camera
+                rays_source = np.dot(world_to_source, rays_world)
 
-            # Convert to integer pixel coordinates
-            px = int(round(image_x))
-            py = int(round(image_y))
+                # Project rays to source image space
+                rays_source = rays_source[:3, :]
+                rays_source_pixels = np.dot(source_K, rays_source)
 
-            # Check if the projected point is within the image bounds
-            if 0 <= px < rgb_width and 0 <= py < rgb_height:
-                visible_count += 1
+                # Normalize homogeneous coordinates
+                rays_source_pixels = rays_source_pixels / rays_source_pixels[2, :]
 
-                # Use depth (distance from RGB camera) for coloring
-                depth = x_rgb_cam  # This is the actual distance along the camera's forward axis
+                # Reshape back to image dimensions
+                source_x = rays_source_pixels[0, :].reshape(target_h, target_w)
+                source_y = rays_source_pixels[1, :].reshape(target_h, target_w)
 
-                # Define color based on depth ranges (adjust as needed)
-                if depth < 10:
-                    color = (0, 0, 255)  # Red (Close)
-                elif depth < 25:
-                    color = (0, 165, 255)  # Orange
-                elif depth < 50:
-                    color = (0, 255, 255)  # Yellow
-                elif depth < 100:
-                    color = (0, 255, 0)  # Green
-                else:
-                    color = (255, 0, 0)  # Blue (Far)
+                # Create a mask for valid projection (inside source image bounds)
+                valid_mask = (
+                        (source_x >= 0) & (source_x < source_w) &
+                        (source_y >= 0) & (source_y < source_h)
+                )
 
-                # Draw the projected point (use cv2.circle for better visibility)
-                cv2.circle(fused_img, (px, py), radius=2, color=color, thickness=-1)  # Filled circle
+                # Check if we have depth information from source camera
+                if 'depth' in source_camera_name:
+                    # Process depth image if available
+                    pass  # Implement depth processing if needed
 
-        # --- Save Results ---
-        print(f"Projected {point_count} points, {visible_count} visible in RGB frame.")
+                # Sample source image at projected coordinates for valid pixels
+                for y in range(target_h):
+                    for x in range(target_w):
+                        if valid_mask[y, x]:
+                            # Get the source pixel coordinates
+                            sx, sy = int(source_x[y, x]), int(source_y[y, x])
 
-        fusion_path = os.path.join(fusion_dir, f"carla_fusion_{frame_num:06d}.png")
-        cv2.imwrite(fusion_path, fused_img)
+                            # Sample color from source image
+                            source_color = source_image[sy, sx]
 
-        # # Create side-by-side comparison
-        # try:
-        #     # Ensure reference_img and fused_img have same height if needed (should be same)
-        #     comparison = np.hstack((reference_img, fused_img))
-        #     comparison_path = os.path.join(fusion_dir, f"comparison_{frame_num:06d}.png")
-        #     cv2.imwrite(comparison_path, comparison)
-        #     print(f"\nCreated CARLA fusion image: {fusion_path}")
-        #     print(f"Created comparison image: {comparison_path}")
-        # except Exception as e:
-        #     print(f"Error creating comparison image: {e}")
-        #     print(f"Reference image shape: {reference_img.shape}, Fused image shape: {fused_img.shape}")
-        #     print(f"(Ensure both images were loaded/created correctly)")
+                            # Simple alpha blending for visualization
+                            # Adjust alpha based on how central the pixel is in the source image
+                            # This reduces the prominence of distortions at the edges
+                            cx, cy = source_w // 2, source_h // 2
+                            dx, dy = abs(sx - cx) / cx, abs(sy - cy) / cy
+                            distance_to_center = np.sqrt(dx ** 2 + dy ** 2)
+                            alpha = max(0, 1 - distance_to_center)
+
+                            # Apply the blending
+                            fused_image[y, x] = alpha * source_color + (1 - alpha) * fused_image[y, x]
+
+            # Store the fused image for this camera
+            fused_outputs[target_camera_name] = fused_image
+
+            # Save the fused image
+            output_dir = self.output_dirs.get(target_camera_name)
+            if output_dir:
+                fusion_dir = os.path.join(output_dir, 'fusion')
+                os.makedirs(fusion_dir, exist_ok=True)
+
+                camera_frame_num = self.frame_counters[target_camera_name]['counter'] - 1
+                fusion_path = os.path.join(fusion_dir, f"{camera_frame_num:06d}.png")
+                cv2.imwrite(fusion_path, fused_image)
+
+        return fused_outputs
 
     def save_lidar_data(self, name, lidar_data, output_dir):
         """Callback to save LiDAR point cloud data as .ply files."""
@@ -722,32 +682,50 @@ class SpawnCar:
 
     def cleanup(self):
         """
-        Cleanup the car and its sensors at the end of the simulation.
-        Also, print the file locations of sensor data (videos/Ply files).
+        Cleanup resources and create videos from saved images
         """
+        print("Cleaning up resources...")
 
-        # Allow ongoing tasks to finish
-        time.sleep(2)
+        # Destroy the sensors
+        for sensor_name, sensor in self.sensors.items():
+            try:
+                sensor.destroy()
+                print(f"Sensor {sensor_name} destroyed successfully")
+            except Exception as e:
+                print(f"Error destroying sensor {sensor_name}: {e}")
 
+        # Destroy the ego vehicle
         try:
-            # Destroy sensors
-            if hasattr(self, 'sensors') and self.sensors:
-                for cur_sensor in self.sensors.values():
-                    cur_sensor.destroy()
-                print("All sensors destroyed successfully.")
-
-            # Destroy the vehicle
-            if hasattr(self, 'vehicle') and self.vehicle:
-                self.vehicle.destroy()
-                print("Vehicle destroyed successfully.")
-
-            if hasattr(self, 'sensor_configs') and self.sensor_configs:  # For other sensors (e.g., LiDAR)
-                for config in self.sensor_configs:
-                    if 'file_path' in config:  # Assuming config contains file paths
-                        print(f"LiDAR data saved at: {config['file_path']}")
-
+            self.vehicle.destroy()
+            print("Ego vehicle destroyed successfully")
         except Exception as e:
-            print(f"An error occurred during cleanup: {e}")
+            print(f"Error destroying ego vehicle: {e}")
+
+        # Restore original world settings
+        if self.original_settings:
+            self.world.apply_settings(self.original_settings)
+            print("Original world settings restored")
+
+        # Create videos from saved images for all camera outputs and their subfolders
+        for camera_name, output_dir in self.output_dirs.items():
+            if 'camera' in camera_name:
+                # Base camera output directory
+                self.create_video_from_images(output_dir, f"{camera_name}_video.mp4")
+
+                # Check for lidar visualization subfolder
+                lidar_viz_dir = os.path.join(output_dir, 'lidar_viz')
+                if os.path.exists(lidar_viz_dir) and os.path.isdir(lidar_viz_dir):
+                    self.create_video_from_images(lidar_viz_dir, f"{camera_name}_lidar_viz_video.mp4")
+
+                # Check for fusion with lidar subfolder
+                fusion_lidar_dir = os.path.join(output_dir, 'fusion_with_lidar')
+                if os.path.exists(fusion_lidar_dir) and os.path.isdir(fusion_lidar_dir):
+                    self.create_video_from_images(fusion_lidar_dir, f"{camera_name}_fusion_with_lidar_video.mp4")
+
+                # Check for normal fusion subfolder
+                fusion_dir = os.path.join(output_dir, 'fusion')
+                if os.path.exists(fusion_dir) and os.path.isdir(fusion_dir):
+                    self.create_video_from_images(fusion_dir, f"{camera_name}_fusion_video.mp4")
 
         self.set_asynchronous_mode()
 
@@ -857,8 +835,6 @@ if __name__ == "__main__":
 
             # Process frame with multiple cameras
             car.process_frame_with_multiple_cameras()
-
-            car.perform_carla_sensor_fusion()
 
             # Print progress
             sys.stdout.write(f"\r({frame}/{args.frames}) Processing... ")
