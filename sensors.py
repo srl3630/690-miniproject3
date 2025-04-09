@@ -791,9 +791,47 @@ if __name__ == "__main__":
         type=str,
         default=DEFAULT_SENSOR_CONFIG,
         help="""JSON string specifying the sensors. Default sensors are:
-                '[{"type": "sensor.lidar.ray_cast", "x": 0.0, "y": 0.0, "z": 2}, 
-                   {"type": "sensor.camera.rgb", "x": 1.8, "y": -0.5, "z": 0.7}, 
-                   {"type": "sensor.camera.depth", "x": 1.8, "y": 0.5, "z": 0.7}]'"""
+                '[
+    {
+        'type': 'sensor.camera.rgb',
+        'name': 'front_camera',
+        'attributes': {
+            'image_size_x': '1280',
+            'image_size_y': '720',
+            'fov': '90'
+        },
+        'x': 1.8,
+        'y': -0.5,
+        'z': 0.7
+    },
+    {
+        'type': 'sensor.camera.depth',
+        'name': 'front_depth_camera',
+        'attributes': {
+            'image_size_x': '1280',
+            'image_size_y': '720',
+            'fov': '90'
+        },
+        'x': 1.8,
+        'y': 0.5,
+        'z': 0.7
+    },
+    {
+        'type': 'sensor.lidar.ray_cast',
+        'name': 'lidar',
+        'attributes': {
+            'channels': '64',
+            'points_per_second': '100000',
+            'rotation_frequency': '10',
+            'range': '50',
+            'upper_fov': '15',
+            'lower_fov': '-25'
+        },
+        'x': 0.0,
+        'y': 0.0,
+        'z': 2.0
+    }
+]'"""
     )
 
     args = parser.parse_args()
