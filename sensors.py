@@ -369,9 +369,49 @@ class SpawnCar:
         # Increment lidar frame counter
         self.frame_counters[lidar_name]['counter'] += 1
 
+    # Helper function for CARLA Depth Conversion (assuming saved with carla.ColorConverter.Depth)
+    def carla_depth_to_meters(self, depth_img_array_uint8):
+        """
+        Converts a CARLA depth image (saved as PNG with Depth converter) to meters.
+        Assumes input is a NumPy array with dtype uint8 and shape (H, W, 3) or (H, W, 4).
+        Based on CARLA documentation: https://carla.readthedocs.io/en/latest/ref_sensors/#depth-camera
+        """
+        if depth_img_array_uint8.shape[-1] < 3:
+            print("Warning: Expected 3 or 4 channel depth image for standard CARLA depth conversion.")
+            # Fallback or error handling needed here - maybe assume grayscale direct depth?
+            # For now, let's assume it *was* meant to be encoded and try using the first channel
+            R = depth_img_array_uint8.astype(np.float32)
+            G = depth_img_array_uint8.astype(np.float32)  # Repeat R if single channel
+            B = depth_img_array_uint8.astype(np.float32)  # Repeat R if single channel
+        else:
+            R = depth_img_array_uint8[:, :, 0].astype(np.float32)
+            G = depth_img_array_uint8[:, :, 1].astype(np.float32)
+            B = depth_img_array_uint8[:, :, 2].astype(np.float32)
+
+        # Formula: normalized = (R + G*256 + B*256*256) / (256*256*256 - 1)
+        # Formula: depth_meters = 1000 * normalized
+        normalized_depth = (R + G * 256.0 + B * 256.0 * 256.0) / (256.0 * 256.0 * 256.0 - 1.0)
+        depth_in_meters = 1000.0 * normalized_depth
+        return depth_in_meters
+
+    # Helper function for CARLA Logarithmic Depth Conversion (if saved with LogarithmicDepth)
+    # def carla_log_depth_to_meters(depth_img_array_uint8):
+    #     """ Converts CARLA Logarithmic depth """
+    #     # Assuming saved as grayscale PNG
+    #     if len(depth_img_array_uint8.shape) > 2:
+    #         gray_depth = depth_img_array_uint8[:,:,0] # Take one channel
+    #     else:
+    #         gray_depth = depth_img_array_uint8
+    #
+    #     # Formula from docs (approximate): Depth = 1000 * (DepthImage / 255.0)
+    #     # This might need tuning based on actual far plane used during saving
+    #     depth_in_meters = 1000.0 * (gray_depth.astype(np.float32) / 255.0)
+    #     return depth_in_meters
+
     def perform_carla_sensor_fusion(self):
         """
-        Use CARLA's built-in capabilities to perform sensor fusion between cameras
+        Use CARLA's built-in capabilities and correct transformations to perform
+        sensor fusion between RGB and Depth cameras.
         """
         # Get all camera sensors
         camera_sensors = {name: sensor for name, sensor in self.sensors.items() if 'camera' in name}
@@ -385,7 +425,8 @@ class SpawnCar:
         self.output_dirs['fusion_camera'] = fusion_dir
         os.makedirs(fusion_dir, exist_ok=True)
 
-        # Get the frame number
+        # Get the frame number - IMPORTANT: Assumes sensors are synchronized!
+        # If not running in synchronous mode, this can lead to mismatches.
         frame_num = max(
             counter_data['counter'] for sensor_name, counter_data in self.frame_counters.items()
             if 'counter' in counter_data
@@ -394,175 +435,209 @@ class SpawnCar:
         # Get main reference sensor (e.g., RGB camera)
         reference_sensor_name = next((name for name in camera_sensors if 'rgb' in name or 'front_camera' in name), None)
         if not reference_sensor_name:
-            reference_sensor_name = next(iter(camera_sensors))
+            print("Warning: Could not find a primary RGB camera ('rgb' or 'front_camera'). Using first available.")
+            reference_sensor_name = next(iter(camera_sensors))  # Fallback
 
         reference_sensor = self.sensors[reference_sensor_name]
-        reference_transform = reference_sensor.get_transform()
+        reference_transform = reference_sensor.get_transform()  # World transform of RGB cam
 
         # Get reference image
         ref_img_path = os.path.join(
-            self.output_dirs.get(reference_sensor_name, reference_sensor_name),
+            self.output_dirs.get(reference_sensor_name,
+                                 os.path.join(self.output_dirs.get('base', 'sensor_output'), reference_sensor_name)),
             f"{self.frame_counters[reference_sensor_name]['counter'] - 1:06d}.png"
         )
         if not os.path.exists(ref_img_path):
-            print(f"Reference image {ref_img_path} not found")
+            print(f"Reference image {ref_img_path} not found for frame {frame_num}")
             return
 
         reference_img = cv2.imread(ref_img_path)
+        if reference_img is None:
+            print(f"Error reading reference image {ref_img_path}")
+            return
+        rgb_height, rgb_width, _ = reference_img.shape
 
-        # Get world coordinates of pixels using depth information
+        # --- Find and Process Depth Sensor ---
         depth_sensor_name = next((name for name in camera_sensors if 'depth' in name), None)
-        if depth_sensor_name:
-            depth_sensor = self.sensors[depth_sensor_name]
-            depth_transform = depth_sensor.get_transform()
+        if not depth_sensor_name:
+            print("No depth sensor found for fusion.")
+            return
 
-            # Get depth image
-            depth_img_path = os.path.join(
-                self.output_dirs.get(depth_sensor_name, depth_sensor_name),
-                f"{self.frame_counters[depth_sensor_name]['counter'] - 1:06d}.png"
-            )
-            if not os.path.exists(depth_img_path):
-                print(f"Depth image {depth_img_path} not found")
-                return
+        depth_sensor = self.sensors[depth_sensor_name]
+        depth_transform = depth_sensor.get_transform()  # World transform of Depth cam
 
-            # Load and process depth image
-            depth_img = np.array(Image.open(depth_img_path))
+        # Get depth image path
+        depth_img_path = os.path.join(
+            self.output_dirs.get(depth_sensor_name,
+                                 os.path.join(self.output_dirs.get('base', 'sensor_output'), depth_sensor_name)),
+            f"{self.frame_counters[depth_sensor_name]['counter'] - 1:06d}.png"
+        )
+        if not os.path.exists(depth_img_path):
+            print(f"Depth image {depth_img_path} not found for frame {frame_num}")
+            return
 
-            # Print depth image shape and type for debugging
-            print(f"Depth image shape: {depth_img.shape}, dtype: {depth_img.dtype}")
+        # --- Correct Depth Loading and Conversion ---
+        try:
+            # Load using PIL to handle different PNG types, then convert to NumPy
+            depth_img_pil = Image.open(depth_img_path)
+            depth_img_raw = np.array(depth_img_pil, dtype=np.uint8)  # Assume uint8 PNG output
 
-            # Make sure depth image is single-channel
-            if len(depth_img.shape) > 2:
-                # If RGB, convert to grayscale (use first channel or average)
-                depth_img = depth_img[:, :, 0].astype(np.float32)
-            else:
-                depth_img = depth_img.astype(np.float32)
+            print(f"Loaded Depth image shape: {depth_img_raw.shape}, dtype: {depth_img_raw.dtype}")
 
-            # Convert depth image to meters (assuming CARLA's depth encoding)
-            normalized_depth = depth_img / 255.0
-            depth_in_meters = 1000 * normalized_depth  # Assuming max range is 1000m
+            # *** CRITICAL STEP: Choose the correct conversion based on how depth was saved ***
+            # Option 1: Assume saved using carla.ColorConverter.Depth (Encodes depth in RGB channels)
+            depth_in_meters = self.carla_depth_to_meters(depth_img_raw)
 
-            # Get camera attributes
-            depth_fov = float(depth_sensor.attributes.get('fov', 90))
-            depth_width = depth_img.shape[1]
-            depth_height = depth_img.shape[0]
+            # Option 2: Assume saved using carla.ColorConverter.LogarithmicDepth (Grayscale, needs scaling)
+            # depth_in_meters = carla_log_depth_to_meters(depth_img_raw)
 
-            # Create a colored point cloud from depth
-            colored_point_cloud = []
-            for y in range(0, depth_height, 5):  # Subsample for efficiency
-                for x in range(0, depth_width, 5):
-                    # Now depth_in_meters[y, x] should be a scalar
-                    depth_value = depth_in_meters[y, x]
+            # Option 3: If you saved raw depth data (e.g., as .npy float32), load that directly.
+            # depth_in_meters = np.load(depth_img_path.replace('.png', '.npy')) # Example
 
-                    if depth_value > 0:
-                        # Use CARLA's camera intrinsic calculation method
-                        image_point = carla.Vector2D(x, y)
+            # Option 4: If you used your previous linear scaling method during *saving*
+            # if len(depth_img_raw.shape) > 2:
+            #     depth_img_raw_gray = depth_img_raw[:, :, 0] # Take one channel if needed
+            # else:
+            #     depth_img_raw_gray = depth_img_raw
+            # normalized_depth = depth_img_raw_gray.astype(np.float32) / 255.0
+            # depth_in_meters = 1000.0 * normalized_depth # Matches your original code attempt
 
-                        # Convert from image space to camera space using CARLA helper
-                        # Convert from image space to camera space manually
-                        fov_rad = math.radians(depth_fov)
-                        focal_length = depth_width / (2.0 * math.tan(fov_rad / 2.0))
+        except Exception as e:
+            print(f"Error processing depth image {depth_img_path}: {e}")
+            return
 
-                        # Convert to camera coordinates
-                        cx = depth_width / 2.0
-                        cy = depth_height / 2.0
-                        x_corr = (image_point.x - cx) / focal_length
-                        y_corr = (image_point.y - cy) / focal_length
+        depth_height, depth_width = depth_in_meters.shape  # Should now be 2D
 
-                        # Create 3D point in camera space
-                        x_val = float(depth_value)
-                        y_val = float(-depth_value * x_corr)
-                        z_val = float(depth_value * y_corr)
-                        camera_point = carla.Location(x_val, y_val, z_val)
+        # --- Calculate Depth Camera Intrinsics ---
+        try:
+            depth_fov = float(depth_sensor.attributes['fov'])
+        except KeyError:
+            print("Warning: Depth sensor 'fov' attribute missing. Assuming 90.")
+            depth_fov = 90.0
+        depth_focal = depth_width / (2.0 * math.tan(math.radians(depth_fov) / 2.0))
+        depth_cx = depth_width / 2.0
+        depth_cy = depth_height / 2.0
 
-                        # Convert from camera space to world space
-                        world_point = depth_transform.transform(camera_point)
+        # --- Generate Point Cloud in World Coordinates ---
+        world_points = []
+        subsample = 5  # Process every 5th pixel for efficiency
+        for y in range(0, depth_height, subsample):
+            for x in range(0, depth_width, subsample):
+                depth_value = depth_in_meters[y, x]
 
-                        # Store the world point
-                        colored_point_cloud.append(world_point)
+                # Skip invalid depth points (e.g., sky, far distance)
+                # CARLA depth is typically max 1000m, but check your sensor's range attribute
+                if depth_value <= 0 or depth_value >= 1000.0:
+                    continue
 
-            # Project all world points to the reference camera
-            fused_img = reference_img.copy()
+                # --- Inverse Projection: 2D Pixel (Depth Cam) -> 3D Point (Depth Cam Local) ---
+                # CARLA Camera Local Coords: X=forward, Y=right, Z=up
+                # Image Coords: x increases right, y increases down
+                # Formulas derived from pinhole model:
+                # x_img = cx + f * (Y_cam / X_cam)  => Y_cam = X_cam * (x_img - cx) / f
+                # y_img = cy - f * (Z_cam / X_cam)  => Z_cam = -X_cam * (y_img - cy) / f
+                x_cam = float(depth_value)  # X_cam is the depth value
+                y_cam = x_cam * (x - depth_cx) / depth_focal  # Y_cam is right
+                z_cam = -x_cam * (y - depth_cy) / depth_focal  # Z_cam is up (y increases down)
+                point_in_cam_local = carla.Location(x=x_cam, y=y_cam, z=z_cam)
 
-            rgb_fov = float(reference_sensor.attributes.get('fov', 90))
-            rgb_width = reference_img.shape[1]  # Use the actual RGB image width
-            rgb_height = reference_img.shape[0]  # Use the actual RGB image height
+                # --- Transform Point from Depth Camera Local Space to World Space ---
+                # Uses the depth sensor's world transform
+                world_point = depth_transform.transform(point_in_cam_local)
+                world_points.append(world_point)
 
-            # Calculate projection parameters using RGB camera's values
-            fov_rad = math.radians(rgb_fov)
-            focal_length = rgb_width / (2.0 * math.tan(fov_rad / 2.0))
+        print(f"Generated {len(world_points)} points from depth map (subsampled).")
 
-            # Center points of the RGB image (not depth image)
-            cx = rgb_width / 2.0
-            cy = rgb_height / 2.0
+        # --- Project World Points onto Reference (RGB) Camera Image ---
+        fused_img = reference_img.copy()
 
-            # Calculate camera matrices
-            # This requires the camera intrinsic and extrinsic parameters
+        # --- Calculate RGB Camera Intrinsics ---
+        try:
+            rgb_fov = float(reference_sensor.attributes['fov'])
+        except KeyError:
+            print("Warning: RGB sensor 'fov' attribute missing. Assuming 90.")
+            rgb_fov = 90.0
+        rgb_focal = rgb_width / (2.0 * math.tan(math.radians(rgb_fov) / 2.0))
+        rgb_cx = rgb_width / 2.0
+        rgb_cy = rgb_height / 2.0
 
-            # Get camera intrinsics
-            K = np.zeros((3, 3))
-            K[0, 0] = K[1, 1] = focal_length
-            K[0, 2] = cx
-            K[1, 2] = cy
-            K[2, 2] = 1
+        # --- Get the Transformation Matrix from World to RGB Camera Local Space ---
+        # We need the inverse of the RGB camera's world transform
+        world_to_rgb_cam_matrix = np.array(reference_transform.get_inverse_matrix())
 
-            # Get camera extrinsics (reference_transform)
-            # This is more complex and requires converting CARLA's transform to a matrix
-            # For now, let's use a simpler approach
+        point_count = 0
+        visible_count = 0
 
-            for world_point in colored_point_cloud:
-                # Alternative approach: Use a different projection method
-                # Convert world_point to a numpy array
-                point_np = np.array([world_point.x, world_point.y, world_point.z, 1.0])
+        for world_point in world_points:
+            point_count += 1
 
-                # Convert from world to camera coordinates
-                # This requires creating a view matrix from the camera transform
-                camera_location = reference_transform.location
-                camera_rotation = reference_transform.rotation
+            # --- Transform World Point to RGB Camera Local Coordinates ---
+            # Convert carla.Location to homogeneous coordinates [x, y, z, 1] for matrix multiplication
+            wp = np.array([world_point.x, world_point.y, world_point.z, 1.0])
+            # Apply the inverse transform matrix
+            point_in_rgb_cam_h = world_to_rgb_cam_matrix @ wp
+            # Result is [X_cam, Y_cam, Z_cam, 1] in the RGB camera's local frame
 
-                # Create a rotation matrix from camera rotation (simplified)
-                # This is an approximation; a more accurate version would use quaternions
-                roll_rad = math.radians(camera_rotation.roll)
-                pitch_rad = math.radians(camera_rotation.pitch)
-                yaw_rad = math.radians(camera_rotation.yaw)
+            # Get non-homogeneous coords (X=forward, Y=right, Z=up)
+            x_rgb_cam = point_in_rgb_cam_h[0]
+            y_rgb_cam = point_in_rgb_cam_h[1]
+            z_rgb_cam = point_in_rgb_cam_h[2]
 
-                # Create rotation matrices for each axis
-                # This is simplified; a full solution would use matrix multiplication
-                cos_roll, sin_roll = math.cos(roll_rad), math.sin(roll_rad)
-                cos_pitch, sin_pitch = math.cos(pitch_rad), math.sin(pitch_rad)
-                cos_yaw, sin_yaw = math.cos(yaw_rad), math.sin(yaw_rad)
+            # --- Forward Projection: 3D Point (RGB Cam Local) -> 2D Pixel (RGB Image) ---
+            # Check if point is behind the camera (X_cam <= 0)
+            if x_rgb_cam <= 1e-6:  # Add small epsilon for stability
+                continue
 
-                # World to camera transformation (simplified)
-                camera_relative_x = (world_point.x - camera_location.x) * cos_yaw + \
-                                    (world_point.y - camera_location.y) * sin_yaw
-                camera_relative_y = -(world_point.x - camera_location.x) * sin_yaw + \
-                                    (world_point.y - camera_location.y) * cos_yaw
-                camera_relative_z = world_point.z - camera_location.z
+            # Apply pinhole projection formulas (consistent with inverse projection derivation)
+            # x_img = cx + f * (Y_cam / X_cam)
+            # y_img = cy - f * (Z_cam / X_cam)
+            image_x = rgb_cx + rgb_focal * (y_rgb_cam / x_rgb_cam)
+            image_y = rgb_cy - rgb_focal * (z_rgb_cam / x_rgb_cam)
 
-                # Project to image space
-                if camera_relative_x > 0:  # Point is in front of camera
-                    image_x = cx + focal_length * camera_relative_y / camera_relative_x
-                    image_y = cy - focal_length * camera_relative_z / camera_relative_x
+            # Convert to integer pixel coordinates
+            px = int(round(image_x))
+            py = int(round(image_y))
 
-                    x, y = int(image_x), int(image_y)
+            # Check if the projected point is within the image bounds
+            if 0 <= px < rgb_width and 0 <= py < rgb_height:
+                visible_count += 1
 
-                    if 0 <= x < rgb_width and 0 <= y < rgb_height:
-                        # Color based on distance
-                        distance = math.sqrt(camera_relative_x ** 2 + camera_relative_y ** 2 + camera_relative_z ** 2)
-                        normalized_dist = min(distance / 50.0, 1.0)
+                # Use depth (distance from RGB camera) for coloring
+                depth = x_rgb_cam  # This is the actual distance along the camera's forward axis
 
-                        color = (
-                            int(255 * (1 - normalized_dist)),
-                            int(255 * normalized_dist),
-                            int(255 * (1 - normalized_dist))
-                        )
+                # Define color based on depth ranges (adjust as needed)
+                if depth < 10:
+                    color = (0, 0, 255)  # Red (Close)
+                elif depth < 25:
+                    color = (0, 165, 255)  # Orange
+                elif depth < 50:
+                    color = (0, 255, 255)  # Yellow
+                elif depth < 100:
+                    color = (0, 255, 0)  # Green
+                else:
+                    color = (255, 0, 0)  # Blue (Far)
 
-                        cv2.circle(fused_img, (x, y), 2, color, -1)
+                # Draw the projected point (use cv2.circle for better visibility)
+                cv2.circle(fused_img, (px, py), radius=2, color=color, thickness=-1)  # Filled circle
 
-            # Save the fused image
-            fusion_path = os.path.join(fusion_dir, f"carla_fusion_{frame_num:06d}.png")
-            cv2.imwrite(fusion_path, fused_img)
-            print(f"\nCreated CARLA-based fusion image: {fusion_path}")
+        # --- Save Results ---
+        print(f"Projected {point_count} points, {visible_count} visible in RGB frame.")
+
+        fusion_path = os.path.join(fusion_dir, f"carla_fusion_{frame_num:06d}.png")
+        cv2.imwrite(fusion_path, fused_img)
+
+        # # Create side-by-side comparison
+        # try:
+        #     # Ensure reference_img and fused_img have same height if needed (should be same)
+        #     comparison = np.hstack((reference_img, fused_img))
+        #     comparison_path = os.path.join(fusion_dir, f"comparison_{frame_num:06d}.png")
+        #     cv2.imwrite(comparison_path, comparison)
+        #     print(f"\nCreated CARLA fusion image: {fusion_path}")
+        #     print(f"Created comparison image: {comparison_path}")
+        # except Exception as e:
+        #     print(f"Error creating comparison image: {e}")
+        #     print(f"Reference image shape: {reference_img.shape}, Fused image shape: {fused_img.shape}")
+        #     print(f"(Ensure both images were loaded/created correctly)")
 
     def save_lidar_data(self, name, lidar_data, output_dir):
         """Callback to save LiDAR point cloud data as .ply files."""
