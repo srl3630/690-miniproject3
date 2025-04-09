@@ -725,7 +725,7 @@ class SpawnCar:
         self.set_asynchronous_mode()
 
 
-    def create_video_from_images(self, output_dir, name, fps=30):
+    def create_video_from_images(self, output_dir, name, fps=20):
         """
         Iterates through all output directories, creates videos from images in those directories,
         and then deletes the images.
@@ -784,7 +784,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="sensor_output",
                         help="Directory to save sensor data. Default is 'sensor_output'")
     parser.add_argument("--reload_map", type=bool, default=True, help="Reload the map before spawning the car. Default is True.")
-    parser.add_argument("--frames", type=int, default=250, help="Number of frames to capture. Default is 100.")
+    parser.add_argument("--frames", type=int, default=100, help="Number of frames to capture. Default is 100.")
     parser.add_argument("--create_videos", type=bool, default=True, help="Create a video from the captured sensor data. Default is True.")
     parser.add_argument(
         "--sensor_configs",
