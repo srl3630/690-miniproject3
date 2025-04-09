@@ -701,11 +701,6 @@ class SpawnCar:
         except Exception as e:
             print(f"Error destroying ego vehicle: {e}")
 
-        # Restore original world settings
-        if self.original_settings:
-            self.world.apply_settings(self.original_settings)
-            print("Original world settings restored")
-
         # Create videos from saved images for all camera outputs and their subfolders
         for camera_name, output_dir in self.output_dirs.items():
             if 'camera' in camera_name:
@@ -715,17 +710,17 @@ class SpawnCar:
                 # Check for lidar visualization subfolder
                 lidar_viz_dir = os.path.join(output_dir, 'lidar_viz')
                 if os.path.exists(lidar_viz_dir) and os.path.isdir(lidar_viz_dir):
-                    self.create_video_from_images(lidar_viz_dir, f"{camera_name}_lidar_viz_video.mp4")
+                    self.create_video_from_images(lidar_viz_dir, f"{camera_name}_lidar_viz_video")
 
                 # Check for fusion with lidar subfolder
                 fusion_lidar_dir = os.path.join(output_dir, 'fusion_with_lidar')
                 if os.path.exists(fusion_lidar_dir) and os.path.isdir(fusion_lidar_dir):
-                    self.create_video_from_images(fusion_lidar_dir, f"{camera_name}_fusion_with_lidar_video.mp4")
+                    self.create_video_from_images(fusion_lidar_dir, f"{camera_name}_fusion_with_lidar_video")
 
                 # Check for normal fusion subfolder
                 fusion_dir = os.path.join(output_dir, 'fusion')
                 if os.path.exists(fusion_dir) and os.path.isdir(fusion_dir):
-                    self.create_video_from_images(fusion_dir, f"{camera_name}_fusion_video.mp4")
+                    self.create_video_from_images(fusion_dir, f"{camera_name}_fusion_video")
 
         self.set_asynchronous_mode()
 
@@ -742,7 +737,7 @@ class SpawnCar:
         """
         print(f"Creating video from images in {output_dir}...")
         image_files = sorted(glob.glob(os.path.join(output_dir, "*.png")))  # Or *.jpg, depending on your image format
-        if not image_files:
+        if not image_files or len(image_files) == 0:
             print(f"No images found in {output_dir}. Skipping.")
 
         print(f"Found {len(image_files)} images in {output_dir}.")
@@ -841,17 +836,6 @@ if __name__ == "__main__":
             sys.stdout.flush()
 
         print("\nDone!")
-
-        # Create videos from captured frames if desired
-        if args.create_videos:
-            for camera_name in [name for name in car.sensors.keys() if 'camera' in name] + ['fusion_camera']:
-                print(f'Is {camera_name} in {car.output_dirs.keys()}?')
-                if camera_name in car.output_dirs.keys():
-                    car.create_video_from_images(
-                        output_dir=car.output_dirs[camera_name],
-                        name=f"{camera_name}_output",
-                        fps=20
-                    )
 
     except Exception as e:
         # --- THIS IS THE ADDED EXCEPT BLOCK ---
