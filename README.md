@@ -2,7 +2,9 @@
 
 ## Overview
 
-This project provides a framework for spawning a vehicle in the CARLA simulator and recording data from multiple sensors. It allows you to configure various sensor types (e.g., cameras, LiDAR) and save the captured data for later analysis or use in machine learning applications.
+This project provides a framework for spawning a vehicle in the CARLA simulator and recording and projecting data from
+multiple sensors (LiDAR and Depth) onto an RGB camera. It allows you to configure various sensor types (e.g., cameras,
+LiDAR) and save the captured data for later analysis or use in machine learning applications.
 
 [Sample Output (Google Drive)](https://drive.google.com/drive/folders/14sAM0Tg_8Qq1EABdM_fMnW05E99ldiHE?usp=drive_link)
 
@@ -19,6 +21,8 @@ This project provides a framework for spawning a vehicle in the CARLA simulator 
     *   `cv2`
     *   `os`
     *   `subprocess`
+    * `PIL`
+    * `matplotlib`
 
     You can install the required packages using pip:
 
@@ -29,6 +33,7 @@ This project provides a framework for spawning a vehicle in the CARLA simulator 
 ## Project Structure
 
 *   `sensors.py`: Contains the core logic for spawning the car, configuring sensors, and recording data.
+* `my_sensor.json`: JSON file containing the default configuration for cameras in the script
 
 ## Usage
 
@@ -45,12 +50,15 @@ This project provides a framework for spawning a vehicle in the CARLA simulator 
     python sensors.py --save_dir /path/to/output/folder --runtime 10
     ```
 
-3.  **Configure Sensors:** The script uses JSON to define the sensors and their positions to be attached to the vehicle. The default configuration satisfies the following requirements (no `--sensors` argument specified). See [Example Sensor Flag Input](#example-sensor-flag-input) for examples.
+3. **Configure Sensors:** The script uses JSON to define the sensors and their positions to be attached to the vehicle.
+   The default configuration satisfies the following requirements (no `--sensor_config_file` or `sensor_configs`
+   argument specified). See [Example Sensor Flag Input](#example-sensor-flag-input) for examples.
 - `Lidar` sensor placed above car, centered
 - `RGB` sensor placed near left headlight
 - `Depth` sensor placed near right headlight
 
-4.  **Output:** The recorded sensor data (videos, LiDAR point clouds) will be saved in the specified output directory. The directory structure will be organized by sensor type.
+4. **Output:** The recorded sensor data (videos, LiDAR point clouds) will be saved in the specified output directory.
+   The directory structure will be organized by sensor type and fused models.
 
 ## Command-Line Options
 
@@ -63,9 +71,8 @@ The `sensors.py` script uses `argparse` to handle command-line arguments. Here's
 
 ## Example Sensor Flag Input
 *Lidar*, *RGB*, and *Depth* Sensors with all coordinate values set to `10`
-```
-python sensors.py --sensors '[{"type": "sensor.lidar.ray_cast", "x": 10.0, "y": 10.0, "z": 10.0}, {"type": "sensor.camera.rgb", "x": 10.0, "y": 10.0, "z": 10.0}, {"type": "sensor.camera.depth", "x": 10.0, "y": 10.0, "z": 10.0}]'
-```
+
+See included `my_sensors.json` for example input.
 
 ## Notes
 

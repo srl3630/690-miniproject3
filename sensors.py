@@ -1,5 +1,6 @@
 import argparse
 import glob
+import json
 import math
 import os
 import sys
@@ -254,6 +255,7 @@ class SpawnCar:
             image_w = int(self.sensors[camera_name].attributes['image_size_x'])
             image_h = int(self.sensors[camera_name].attributes['image_size_y'])
 
+            # Transpose the 2D points array to match the expected format for filtering and further processing.
             points_2d = points_2d.T
             filtered_intensity = intensity.T
             points_in_canvas_mask = \
@@ -477,7 +479,7 @@ class SpawnCar:
         depth_sensor = self.sensors[depth_sensor_name]
         depth_transform = depth_sensor.get_transform()  # World transform of Depth cam
 
-        # Get depth image path
+        # Get depth original image path (no lidar)
         depth_img_path = os.path.join(
             self.output_dirs.get(depth_sensor_name + "_original",
                                  os.path.join(self.output_dirs.get('base', 'sensor_output'),
@@ -489,7 +491,7 @@ class SpawnCar:
             print(f"Depth image {depth_img_path} not found for frame {frame_num}")
             return
 
-        # --- Correct Depth Loading and Conversion ---
+        # Depth Loading and Conversion
         try:
             # Load using PIL to handle different PNG types, then convert to NumPy
             depth_img_pil = Image.open(depth_img_path)
@@ -497,8 +499,7 @@ class SpawnCar:
 
             print(f"Loaded Depth image shape: {depth_img_raw.shape}, dtype: {depth_img_raw.dtype}")
 
-            # *** CRITICAL STEP: Choose the correct conversion based on how depth was saved ***
-            # Option 1: Assume saved using carla.ColorConverter.Depth (Encodes depth in RGB channels)
+            # get depth in meters
             depth_in_meters = self.carla_depth_to_meters(depth_img_raw)
 
 
@@ -533,9 +534,6 @@ class SpawnCar:
                 # --- Inverse Projection: 2D Pixel (Depth Cam) -> 3D Point (Depth Cam Local) ---
                 # CARLA Camera Local Coords: X=forward, Y=right, Z=up
                 # Image Coords: x increases right, y increases down
-                # Formulas derived from pinhole model:
-                # x_img = cx + f * (Y_cam / X_cam)  => Y_cam = X_cam * (x_img - cx) / f
-                # y_img = cy - f * (Z_cam / X_cam)  => Z_cam = -X_cam * (y_img - cy) / f
                 x_cam = float(depth_value)  # X_cam is the depth value
                 y_cam = x_cam * (x - depth_cx) / depth_focal  # Y_cam is right
                 z_cam = -x_cam * (y - depth_cy) / depth_focal  # Z_cam is up (y increases down)
@@ -598,9 +596,6 @@ class SpawnCar:
             px = int(round(image_x))
             py = int(round(image_y))
 
-            depth_values = np.zeros((rgb_height, rgb_width), dtype=np.float32)
-            point_counts = np.zeros((rgb_height, rgb_width), dtype=np.uint8)
-
             # Check if the projected point is within the image bounds
             if 0 <= px < rgb_width and 0 <= py < rgb_height:
                 visible_count += 1
@@ -621,7 +616,7 @@ class SpawnCar:
                 color = (b, g, r)  # OpenCV uses BGR format
 
                 # Draw the projected point (use cv2.circle for better visibility)
-                cv2.circle(fused_img, (px, py), radius=2, color=color, thickness=-1)  # Filled circle
+                cv2.rectangle(fused_img, (px - 1, py - 1), (px + 1, py + 1), color=color, thickness=-1)  # 3x3 rectangle
 
         # --- Save Results ---
         print(f"Projected {point_count} points, {visible_count} visible in RGB frame.")
@@ -805,16 +800,33 @@ if __name__ == "__main__":
     parser.add_argument("--frames", type=int, default=250, help="Number of frames to capture. Default is 100.")
     parser.add_argument("--create_videos", type=bool, default=True, help="Create a video from the captured sensor data. Default is True.")
     parser.add_argument(
+        "--sensor_config_file",
+        type=str,
+        default=None,
+        help="Path to a JSON file containing sensor configurations"
+    )
+
+    # Update the existing sensor_configs argument to indicate it's now an alternative
+    parser.add_argument(
         "--sensor_configs",
         type=str,
         default=DEFAULT_SENSOR_CONFIG,
-        help="""JSON string specifying the sensors. Default sensors are:
-                '[{"type": "sensor.lidar.ray_cast", "x": 0.0, "y": 0.0, "z": 2}, 
-                   {"type": "sensor.camera.rgb", "x": 1.8, "y": -0.5, "z": 0.7}, 
-                   {"type": "sensor.camera.depth", "x": 1.8, "y": 0.5, "z": 0.7}]'"""
+        help="JSON string specifying the sensors. Used if --sensor_config_file is not provided."
     )
 
     args = parser.parse_args()
+
+    if args.sensor_config_file and os.path.exists(args.sensor_config_file):
+        try:
+            with open(args.sensor_config_file, 'r') as f:
+                sensor_configs = json.load(f)
+            print(f"Loaded sensor configuration from {args.sensor_config_file}")
+        except Exception as e:
+            print(f"Error loading sensor config file: {e}")
+            print("Falling back to default sensor configuration")
+            sensor_configs = args.sensor_configs
+    else:
+        sensor_configs = args.sensor_configs
 
     # Set up the client
     client = carla.Client(args.host, args.port)
