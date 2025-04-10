@@ -23,9 +23,8 @@ DEFAULT_SENSOR_CONFIG = [
             'image_size_y': '720',
             'fov': '90'
         },
-        'x': 1.8,
-        'y': -0.5,
-        'z': 0.7
+        'position': (1.8, -0.5, 0.7),
+        'rotation': (0.0, 0.0, 0.0)
     },
     {
         'type': 'sensor.camera.depth',
@@ -35,9 +34,8 @@ DEFAULT_SENSOR_CONFIG = [
             'image_size_y': '720',
             'fov': '90'
         },
-        'x': 1.8,
-        'y': 0.5,
-        'z': 0.7
+        'position': (1.8, 0.5, 0.7),
+        'rotation': (0.0, 0.0, 0.0),
     },
     {
         'type': 'sensor.lidar.ray_cast',
@@ -50,9 +48,8 @@ DEFAULT_SENSOR_CONFIG = [
             'upper_fov': '15',
             'lower_fov': '-25'
         },
-        'x': 0.0,
-        'y': 0.0,
-        'z': 2.0
+        'position': (0.0, 0.0, 2.0),
+        'rotation': (0.0, 0.0, 0.0),
     }
 ]
 
@@ -154,15 +151,17 @@ class SpawnCar:
             for key, value in config.items():
                 bp.set_attribute(key, str(value))
 
+        print(config)
+
         # Use position from config if available, otherwise fall back to provided or default
         if position is None:
-            position = (config['x'], config['y'], config['z']) if config and all(
-                k in config for k in ['x', 'y', 'z']) else (1.6, 0.0, 1.6)
+            position = (1.6, 0.0, 1.6)
+        print(position)
 
         # Use rotation from config if available, otherwise fall back to provided or default
         if rotation is None:
-            rotation = (config['pitch'], config['yaw'], config['roll']) if config and all(
-                k in config for k in ['pitch', 'yaw', 'roll']) else (0.0, 0.0, 0.0)
+            rotation = (0.0, 0.0, 0.0)
+            print(rotation)
 
         # Create the transform
         transform = carla.Transform(
@@ -419,6 +418,7 @@ class SpawnCar:
         depth_in_meters = 1000.0 * normalized_depth
         return depth_in_meters
 
+
     def perform_carla_sensor_fusion(self):
         """
         Use CARLA's built-in capabilities and correct transformations to perform
@@ -479,10 +479,12 @@ class SpawnCar:
 
         # Get depth image path
         depth_img_path = os.path.join(
-            self.output_dirs.get(depth_sensor_name,
-                                 os.path.join(self.output_dirs.get('base', 'sensor_output'), depth_sensor_name)),
+            self.output_dirs.get(depth_sensor_name + "_original",
+                                 os.path.join(self.output_dirs.get('base', 'sensor_output'),
+                                              depth_sensor_name + "_original")),
             f"{self.frame_counters[depth_sensor_name]['counter'] - 1:06d}.png"
         )
+
         if not os.path.exists(depth_img_path):
             print(f"Depth image {depth_img_path} not found for frame {frame_num}")
             return
@@ -499,19 +501,6 @@ class SpawnCar:
             # Option 1: Assume saved using carla.ColorConverter.Depth (Encodes depth in RGB channels)
             depth_in_meters = self.carla_depth_to_meters(depth_img_raw)
 
-            # Option 2: Assume saved using carla.ColorConverter.LogarithmicDepth (Grayscale, needs scaling)
-            # depth_in_meters = carla_log_depth_to_meters(depth_img_raw)
-
-            # Option 3: If you saved raw depth data (e.g., as .npy float32), load that directly.
-            # depth_in_meters = np.load(depth_img_path.replace('.png', '.npy')) # Example
-
-            # Option 4: If you used your previous linear scaling method during *saving*
-            # if len(depth_img_raw.shape) > 2:
-            #     depth_img_raw_gray = depth_img_raw[:, :, 0] # Take one channel if needed
-            # else:
-            #     depth_img_raw_gray = depth_img_raw
-            # normalized_depth = depth_img_raw_gray.astype(np.float32) / 255.0
-            # depth_in_meters = 1000.0 * normalized_depth # Matches your original code attempt
 
         except Exception as e:
             print(f"Error processing depth image {depth_img_path}: {e}")
@@ -609,6 +598,9 @@ class SpawnCar:
             px = int(round(image_x))
             py = int(round(image_y))
 
+            depth_values = np.zeros((rgb_height, rgb_width), dtype=np.float32)
+            point_counts = np.zeros((rgb_height, rgb_width), dtype=np.uint8)
+
             # Check if the projected point is within the image bounds
             if 0 <= px < rgb_width and 0 <= py < rgb_height:
                 visible_count += 1
@@ -636,19 +628,6 @@ class SpawnCar:
 
         fusion_path = os.path.join(fusion_dir, f"carla_fusion_{frame_num:06d}.png")
         cv2.imwrite(fusion_path, fused_img)
-
-        # # Create side-by-side comparison
-        # try:
-        #     # Ensure reference_img and fused_img have same height if needed (should be same)
-        #     comparison = np.hstack((reference_img, fused_img))
-        #     comparison_path = os.path.join(fusion_dir, f"comparison_{frame_num:06d}.png")
-        #     cv2.imwrite(comparison_path, comparison)
-        #     print(f"\nCreated CARLA fusion image: {fusion_path}")
-        #     print(f"Created comparison image: {comparison_path}")
-        # except Exception as e:
-        #     print(f"Error creating comparison image: {e}")
-        #     print(f"Reference image shape: {reference_img.shape}, Fused image shape: {fused_img.shape}")
-        #     print(f"(Ensure both images were loaded/created correctly)")
 
     def save_lidar_data(self, name, lidar_data, output_dir):
         """Callback to save LiDAR point cloud data as .ply files."""
@@ -717,9 +696,11 @@ class SpawnCar:
             sensor_type = sensor_config['type']
             sensor_name = sensor_config.get('name', f"{sensor_type.split('.')[-1]}_{idx}")
             sensor_attributes = sensor_config.get('attributes', {})
+            position = sensor_config.get('position', None)
+            rotation = sensor_config.get('rotation', None)
 
             # Add the sensor
-            self.add_sensor(sensor_type, sensor_name, config=sensor_attributes)
+            self.add_sensor(sensor_type, sensor_name, config=sensor_attributes, position=position, rotation=rotation)
 
     def set_asynchronous_mode(self):
         """
